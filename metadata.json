@@ -1,0 +1,6 @@
+{
+  "name": "English Word Dictation",
+  "description": "An interactive English vocabulary dictation application supporting image word extraction, automatic phonetic and example sentence generation with Gemini, and incorrect word tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

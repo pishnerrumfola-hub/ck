@@ -34,6 +34,62 @@ function getGeminiClient(): GoogleGenAI {
   return aiClient;
 }
 
+interface GeminiRequestParams {
+  contents: any;
+  config: any;
+}
+
+// Resilient wrapping helper designed to automatically failover to highly available alternative models
+// upon encountering 503 high demand spikes or 429 rate limit exceptions.
+async function callGeminiWithFallback(params: GeminiRequestParams) {
+  const models = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+  let finalError = null;
+
+  for (const modelName of models) {
+    try {
+      console.log(`[resilience] Procuring Gemini request via model: ${modelName}`);
+      const ai = getGeminiClient();
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: params.contents,
+        config: params.config,
+      });
+
+      if (response && response.text) {
+        console.log(`[resilience] Generation success. Selected Model: ${modelName}`);
+        return response;
+      }
+      throw new Error(`Model ${modelName} returned an empty response body.`);
+    } catch (err: any) {
+      console.warn(`[resilience] Request with model ${modelName} failed or was temporary unavailable. Error detail:`, err.message || err);
+      finalError = err;
+
+      const errMsg = String(err.message || "").toLowerCase();
+      // Intercept common network load constraints
+      if (
+        errMsg.includes("503") ||
+        errMsg.includes("unavailable") ||
+        errMsg.includes("demand") ||
+        errMsg.includes("resource_exhausted") ||
+        errMsg.includes("429") ||
+        errMsg.includes("rate") ||
+        errMsg.includes("overloaded") ||
+        errMsg.includes("not found") ||
+        errMsg.includes("404") ||
+        errMsg.includes("empty")
+      ) {
+        console.warn(`[resilience] Service pressure encountered. Triggering delay and cascade to next model...`);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+      // For any other unexpected errors, try to cascade to ensure completion
+      console.warn(`[resilience] Non-specific error. Cascading to next fallback chain candidate...`);
+    }
+  }
+
+  throw finalError || new Error("All configured Gemini API models failed to successfully process the request.");
+}
+
 // Ensure error responses are standardized
 const errorHandler = (res: express.Response, error: any) => {
   console.error("Backend Error:", error);
@@ -68,10 +124,7 @@ app.post("/api/ocr", async (req, res) => {
       mimeType = mimePart.replace("data:", "");
     }
 
-    const ai = getGeminiClient();
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await callGeminiWithFallback({
       contents: [
         {
           inlineData: {
@@ -138,10 +191,7 @@ app.post("/api/generate-details", async (req, res) => {
       return res.status(400).json({ error: "A non-empty list of words is required" });
     }
 
-    const ai = getGeminiClient();
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await callGeminiWithFallback({
       contents: `Generate IPA phonetics, Chinese translations, and interactive example sentences for the following distinct English words: ${JSON.stringify(words)}. Return the results exactly fitting the requested schema.`,
       config: {
         systemInstruction: "You are a professional dictionary database compiler that generates IPA (UK/US standard), clean Chinese translations, and modern example sentences.",
